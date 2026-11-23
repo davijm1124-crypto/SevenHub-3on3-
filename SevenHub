@@ -1,0 +1,759 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+==============================================
+   ██████╗  █████╗ ███╗   ███╗███████╗
+  ██╔════╝ ██╔══██╗████╗ ████║██╔════╝
+  ██║  ███╗███████║██╔╝ ╚███║█████╗  
+  ██║   ██║██╔══██║██║   ███║██╔══╝  
+  ╚██████╔╝██║  ██║██║   ██╔╝███████╗
+   ╚═════╝ ╚═╝  ╚═╝╚═╝   ╚═╝╚══════╝
+==============================================
+          SEVEN HUB v1.0
+   Open Source Intelligence Tool
+       Created by NoTrack
+==============================================
+"""
+
+import os
+import sys
+import json
+import time
+import socket
+import subprocess
+import requests
+from datetime import datetime, timedelta
+from urllib.parse import urlparse, quote
+import re
+import threading
+import signal
+import base64
+import hashlib
+import random
+import string
+import uuid
+import argparse
+import logging
+import colorama
+from colorama import Fore, Style, init as colorama_init
+
+# Initialize colorama
+colorama_init(autoreset=True)
+
+# ============================================================
+# CONFIGURAÇÃO GLOBAL
+# ============================================================
+VERSION = "1.0"
+APP_NAME = "SevenHub"
+API_KEYS = {
+    "shodan": "",
+    "virustotal": "",
+    "whoisxmlapi": "",
+    "emailrep": "",
+    "hunter": ""
+}
+
+LOG_FILE = f"{APP_NAME.lower()}_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+OUTPUT_DIR = "sevendb"
+RESULTS_DIR = os.path.join(OUTPUT_DIR, "results")
+
+# Cores e estilos
+class Colors:
+    HEADER = Fore.CYAN + Style.BRIGHT
+    OKGREEN = Fore.GREEN + Style.BRIGHT
+    WARNING = Fore.YELLOW + Style.BRIGHT
+    FAIL = Fore.RED + Style.BRIGHT
+    ENDC = Style.RESET_ALL
+    BOLD = Style.BRIGHT
+    DIM = Style.DIM
+    
+    @staticmethod
+    def clear():
+        if os.name == 'nt':
+            os.system('cls')
+        else:
+            os.system('clear')
+
+# ============================================================
+# CLASSE PRINCIPAL DO SEVEN HUB
+# ============================================================
+class SevenHub:
+    def __init__(self):
+        self.name = APP_NAME
+        self.version = VERSION
+        self.target = None
+        self.results = {}
+        self.sessions = []
+        self.start_time = None
+        self.init_dirs()
+        self.setup_logging()
+        
+    def init_dirs(self):
+        """Cria diretórios necessários"""
+        dirs = [OUTPUT_DIR, RESULTS_DIR, 
+                os.path.join(RESULTS_DIR, "domains"),
+                os.path.join(RESULTS_DIR, "ips"),
+                os.path.join(RESULTS_DIR, "emails"),
+                os.path.join(RESULTS_DIR, "phones"),
+                os.path.join(RESULTS_DIR, "social_media")]
+        for d in dirs:
+            os.makedirs(d, exist_ok=True)
+            
+    def setup_logging(self):
+        """Configura log do sistema"""
+        self.logger = logging.getLogger(APP_NAME)
+        self.logger.setLevel(logging.INFO)
+        handler = logging.FileHandler(LOG_FILE, encoding='utf-8')
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        self.logger.addHandler(handler)
+        
+    def banner(self):
+        """Exibe o banner hacker estiloso"""
+        Colors.clear()
+        banner_text = f"""
+{Colors.HEADER}
+ ==============================================
+   ██████╗  █████╗ ███╗   ███╗███████╗
+  ██╔════╝ ██╔══██╗████╗ ████║██╔════╝
+  ██║  ███╗███████║██╔╝ ╚███║█████╗  
+  ██║   ██║██╔══██║██║   ███║██╔══╝  
+  ╚██████╔╝██║  ██║██║   ██╔╝███████╗
+   ╚═════╝ ╚═╝  ╚═╝╚═╝   ╚═╝╚══════╝
+ ==============================================
+          {APP_NAME} v{self.version}
+   Open Source Intelligence Tool
+       Created by NoTrack
+ ==============================================
+{Colors.ENDC}"""
+        print(banner_text)
+        
+    def loading_bar(self, text, duration=2):
+        """Barra de carregamento estilosa"""
+        for i in range(int(duration * 10)):
+            progress = i / (duration * 10)
+            bar = '█' * int(progress * 20) + '░' * (20 - int(progress * 20))
+            percent = int(progress * 100)
+            print(f"\r{Colors.OKGREEN}[{bar}] {percent}%{Colors.ENDC} {text}", end='', flush=True)
+            time.sleep(0.1)
+        print()
+        
+    def status(self, msg, type="info"):
+        """Exibe mensagens de status"""
+        icons = {
+            "info": "[i]",
+            "success": "[+]",
+            "warning": "[!]",
+            "error": "[-]",
+            "result": "[*]"
+        }
+        colors = {
+            "info": Colors.HEADER,
+            "success": Colors.OKGREEN,
+            "warning": Colors.WARNING,
+            "error": Colors.FAIL,
+            "result": Colors.BOLD
+        }
+        icon = icons.get(type, icons["info"])
+        color = colors.get(type, colors["info"])
+        print(f"{color}{icon} {msg}{Colors.ENDC}")
+        self.logger.info(f"[{type.upper()}] {msg}")
+        
+    def get_timestamp(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    # ==================== MÓDULO DNS/WHOIS ====================
+    def whois_lookup(self, domain):
+        """Realiza lookup WHOIS completo"""
+        self.status(f"Iniciando Whois Lookup: {domain}", "info")
+        self.loading_bar("Consultando registros WHOIS...", 2)
+        
+        try:
+            result = subprocess.run(
+                ['whois', domain],
+                capture_output=True, text=True, timeout=30
+            )
+            whois_data = result.stdout
+            
+            # Parse básico de informações
+            parsed = {
+                "domain": domain,
+                "raw": whois_data,
+                "timestamp": self.get_timestamp(),
+                "registrar": self.extract_whois_field(whois_data, "Registrar"),
+                "creation_date": self.extract_whois_field(whois_data, "Creation Date"),
+                "expiration_date": self.extract_whois_field(whois_data, "Registry Expiry Date"),
+                "name_servers": self.extract_name_servers(whois_data),
+                "status": self.extract_whois_field(whois_data, "Status")
+            }
+            
+            self.save_result("domains", domain, parsed)
+            self.status("Whois Lookup concluído!", "success")
+            return parsed
+            
+        except Exception as e:
+            self.status(f"Erro no Whois: {str(e)}", "error")
+            return {"domain": domain, "error": str(e)}
+    
+    def extract_whois_field(self, data, field):
+        """Extrai campo específico do WHOIS"""
+        lines = data.split('\n')
+        for line in lines:
+            if line.lower().startswith(field.lower()):
+                return ':'.join(line.split(':')[1:]).strip()
+        return "N/A"
+    
+    def extract_name_servers(self, data):
+        """Extrai name servers do WHOIS"""
+        ns = []
+        for line in data.split('\n'):
+            if line.lower().startswith('name server'):
+                ns.append(line.split()[-1])
+        return ns if ns else ["N/A"]
+    
+    # ==================== MÓDULO IP GEOLOCATION ====================
+    def ip_geolocation(self, ip):
+        """Geolocalização via API gratuita"""
+        self.status(f"Consultando geolocalização: {ip}", "info")
+        self.loading_bar("Buscando localização IP...", 2)
+        
+        try:
+            response = requests.get(
+                f"http://ip-api.com/json/{ip}?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,reverse",
+                timeout=15
+            )
+            data = response.json()
+            
+            if data.get('status') == 'success':
+                geo_data = {
+                    "ip": ip,
+                    "country": data.get('country'),
+                    "country_code": data.get('countryCode'),
+                    "region": data.get('regionName'),
+                    "city": data.get('city'),
+                    "latitude": data.get('lat'),
+                    "longitude": data.get('lon'),
+                    "timezone": data.get('timezone'),
+                    "isp": data.get('isp'),
+                    "organization": data.get('org'),
+                    "asn": data.get('as'),
+                    "timestamp": self.get_timestamp()
+                }
+                
+                self.save_result("ips", ip, geo_data)
+                self.status("Geolocalização obtida!", "success")
+                return geo_data
+            else:
+                self.status(f"Erro: {data.get('message')}", "error")
+                return {"ip": ip, "error": data.get('message')}
+                
+        except Exception as e:
+            self.status(f"Erro na consulta: {str(e)}", "error")
+            return {"ip": ip, "error": str(e)}
+    
+    # ==================== MÓDULO EMAIL INTELLIGENCE ====================
+    def email_intelligence(self, email):
+        """Inteligência sobre email"""
+        self.status(f"Analisando email: {email}", "info")
+        self.loading_bar("Verificando reputação e histórico...", 2)
+        
+        try:
+            # Verifica se é email válido
+            is_valid = self.validate_email(email)
+            
+            # Extrai domínio
+            domain = email.split('@')[1].lower() if '@' in email else None
+            
+            results = {
+                "email": email,
+                "valid": is_valid,
+                "domain": domain,
+                "timestamp": self.get_timestamp(),
+                "mx_records": self.get_mx_records(domain) if domain else [],
+                "whois_domain": None
+            }
+            
+            # Se tiver domínio, faz whois também
+            if domain:
+                self.status(f"Dominando domínio: {domain}", "info")
+                results["whois_domain"] = self.whois_lookup(domain)
+            
+            self.save_result("emails", email.replace("@", "_at_"), results)
+            self.status("Análise de email concluída!", "success")
+            return results
+            
+        except Exception as e:
+            self.status(f"Erro: {str(e)}", "error")
+            return {"email": email, "error": str(e)}
+    
+    def validate_email(self, email):
+        """Valida formato de email"""
+        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        return bool(re.match(pattern, email))
+    
+    def get_mx_records(self, domain):
+        """Obtém registros MX"""
+        try:
+            mx_records = socket.getaddrinfo(f'{domain}', None, socket.AF_INET, socket.SOCK_STREAM)
+            return list(set([record[4][0] for record in mx_records]))
+        except:
+            return []
+    
+    # ==================== MÓDULO SOCIAL MEDIA ENUM ====================
+    def social_media_enum(self, username):
+        """Enumera presença em redes sociais"""
+        self.status(f"Enumerando usuário: @{username}", "info")
+        self.loading_bar("Verificando plataformas...", 3)
+        
+        platforms = {
+            "Twitter/X": f"https://twitter.com/{username}",
+            "Instagram": f"https://instagram.com/{username}",
+            "TikTok": f"https://tiktok.com/@{username}",
+            "YouTube": f"https://youtube.com/@{username}",
+            "GitHub": f"https://github.com/{username}",
+            "LinkedIn": f"https://linkedin.com/in/{username}",
+            "Reddit": f"https://reddit.com/user/{username}",
+            "Pinterest": f"https://pinterest.com/{username}",
+            "Flickr": f"https://flickr.com/people/{username}",
+            "SoundCloud": f"https://soundcloud.com/{username}"
+        }
+        
+        results = {
+            "username": username,
+            "platforms": {},
+            "timestamp": self.get_timestamp()
+        }
+        
+        for platform, url in platforms.items():
+            try:
+                response = requests.head(url, timeout=10, allow_redirects=True)
+                exists = response.status_code not in [404, 403, 401]
+                results["platforms"][platform] = {
+                    "url": url,
+                    "exists": exists,
+                    "status_code": response.status_code
+                }
+                if exists:
+                    self.status(f"{platform}: {Colors.OKGREEN}ENCONTRADO{Colors.ENDC}", "success")
+                else:
+                    self.status(f"{platform}: Não encontrado", "warning")
+            except:
+                results["platforms"][platform] = {
+                    "url": url,
+                    "exists": False,
+                    "error": "Timeout"
+                }
+        
+        self.save_result("social_media", username, results)
+        self.status("Enumeração de redes sociais concluída!", "success")
+        return results
+    
+    # ==================== MÓDULO SUBDOMAIN ENUM ====================
+    def subdomain_enum(self, domain):
+        """Enumera subdomínios"""
+        self.status(f"Enumerando subdomínios: {domain}", "info")
+        self.loading_bar("Coletando subdomínios...", 3)
+        
+        # Usando API gratuita ou método alternativo
+        try:
+            # Try crt.sh (Certificate Transparency)
+            url = f"https://crt.sh/?q=%.{domain}&output=json"
+            response = requests.get(url, timeout=30)
+            
+            if response.status_code == 200:
+                certs = response.json()
+                subdomains = set()
+                for cert in certs:
+                    name = cert.get('name_value', '')
+                    for entry in name.split('\n'):
+                        entry = entry.strip().rstrip('.')
+                        if entry and entry != domain and entry.endswith('.' + domain):
+                            subdomains.add(entry)
+                
+                results = {
+                    "domain": domain,
+                    "subdomains": sorted(list(subdomains)),
+                    "total_found": len(subdomains),
+                    "timestamp": self.get_timestamp()
+                }
+                
+                self.save_result("domains", f"{domain}_subdomains", results)
+                self.status(f"{len(subdomains)} subdomínios encontrados!", "success")
+                return results
+                
+        except Exception as e:
+            self.status(f"Erro na enumeração: {str(e)}", "error")
+        
+        return {"domain": domain, "subdomains": [], "total_found": 0}
+    
+    # ==================== MÓDULO PORT SCANNER ====================
+    def port_scan(self, ip, ports="common"):
+        """Scan de portas simplificado"""
+        self.status(f"Escaneando portas: {ip}", "info")
+        self.loading_bar("Verificando portas abertas...", 3)
+        
+        if ports == "common":
+            target_ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 993, 995, 
+                          3306, 3389, 5432, 8080, 8443, 9090]
+        elif isinstance(ports, str) and ',' in ports:
+            target_ports = [int(p.strip()) for p in ports.split(',')]
+        else:
+            target_ports = [int(ports)]
+        
+        open_ports = []
+        services = {
+            21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP",
+            53: "DNS", 80: "HTTP", 110: "POP3", 143: "IMAP",
+            443: "HTTPS", 993: "IMAPS", 995: "POP3S",
+            3306: "MySQL", 3389: "RDP", 5432: "PostgreSQL",
+            8080: "HTTP-Proxy", 8443: "HTTPS-Alt", 9090: "WebAdmin"
+        }
+        
+        for port in target_ports:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex((ip, port))
+                if result == 0:
+                    service = services.get(port, f"Port-{port}")
+                    open_ports.append({"port": port, "service": service})
+                    self.status(f"Porta {port}/{services.get(port, '?')} ABERTA", "success")
+                sock.close()
+            except:
+                pass
+        
+        results = {
+            "ip": ip,
+            "open_ports": open_ports,
+            "total_open": len(open_ports),
+            "timestamp": self.get_timestamp()
+        }
+        
+        self.save_result("ips", f"{ip}_ports", results)
+        self.status(f"{len(open_ports)} portas abertas encontradas!", "success")
+        return results
+    
+    # ==================== MÓDULO HASH & CRYPTO ====================
+    def hash_generator(self, input_str, algorithm="sha256"):
+        """Gera hash de string"""
+        algorithms = {
+            "md5": hashlib.md5,
+            "sha1": hashlib.sha1,
+            "sha256": hashlib.sha256,
+            "sha512": hashlib.sha512
+        }
+        
+        hasher = algorithms.get(algorithm.lower(), hashlib.sha256)
+        return hasher(input_str.encode()).hexdigest()
+    
+    def base64_encode(self, text):
+        return base64.b64encode(text.encode()).decode()
+    
+    def base64_decode(self, text):
+        try:
+            return base64.b64decode(text.encode()).decode()
+        except:
+            return "Decodificação falhou"
+    
+    # ==================== MÓDULO PHONE INTELLIGENCE ====================
+    def phone_intelligence(self, phone):
+        """Inteligência sobre telefone"""
+        self.status(f"Analisando telefone: {phone}", "info")
+        self.loading_bar("Verificando número...", 2)
+        
+        # Limpa formato
+        clean_phone = re.sub(r'[^\d]', '', phone)
+        
+        results = {
+            "phone": phone,
+            "clean": clean_phone,
+            "length": len(clean_phone),
+            "possible_country": self.detect_country_from_phone(clean_phone),
+            "timestamp": self.get_timestamp()
+        }
+        
+        self.save_result("phones", clean_phone, results)
+        self.status("Análise de telefone concluída!", "success")
+        return results
+    
+    def detect_country_from_phone(self, phone):
+        """Detecta país baseado no prefixo"""
+        prefixes = {
+            "+1": "EUA/Canadá", "+44": "Reino Unido", "+49": "Alemanha",
+            "+33": "França", "+39": "Itália", "+34": "Espanha",
+            "+55": "Brasil", "+52": "México", "+54": "Argentina",
+            "+81": "Japão", "+86": "China", "+91": "Índia",
+            "+7": "Rússia", "+82": "Coreia do Sul", "+886": "Taiwan"
+        }
+        
+        for prefix, country in prefixes.items():
+            if phone.startswith(prefix[1:]):
+                return country
+        return "Desconhecido"
+    
+    # ==================== MÓDULO URL ANALYSIS ====================
+    def url_analysis(self, url):
+        """Analisa URL detalhadamente"""
+        self.status(f"Analisando URL: {url}", "info")
+        
+        parsed = urlparse(url)
+        
+        results = {
+            "url": url,
+            "scheme": parsed.scheme,
+            "domain": parsed.hostname,
+            "port": parsed.port or (443 if parsed.scheme == 'https' else 80),
+            "path": parsed.path,
+            "query": parsed.query,
+            "fragment": parsed.fragment,
+            "timestamp": self.get_timestamp()
+        }
+        
+        # Resolve IP
+        try:
+            ip = socket.gethostbyname(parsed.hostname)
+            results["resolved_ip"] = ip
+            results["ip_info"] = self.ip_geolocation(ip)
+        except:
+            results["resolved_ip"] = "Falha na resolução"
+        
+        self.save_result("domains", f"url_{hashlib.md5(url.encode()).hexdigest()[:8]}", results)
+        self.status("Análise de URL concluída!", "success")
+        return results
+    
+    # ==================== MÓDULO GERAÇÃO DE RELATÓRIOS ====================
+    def generate_report(self, format="json"):
+        """Gera relatório final"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if format == "json":
+            filename = f"report_{timestamp}.json"
+            with open(os.path.join(RESULTS_DIR, filename), 'w', encoding='utf-8') as f:
+                json.dump(self.results, f, indent=2, ensure_ascii=False)
+        elif format == "txt":
+            filename = f"report_{timestamp}.txt"
+            with open(os.path.join(RESULTS_DIR, filename), 'w', encoding='utf-8') as f:
+                f.write(f"RELATÓRIO SEVEN HUB\n")
+                f.write(f"Gerado em: {self.get_timestamp()}\n")
+                f.write("="*50 + "\n\n")
+                for key, value in self.results.items():
+                    f.write(f"{key}:\n{json.dumps(value, indent=2)}\n\n")
+        
+        self.status(f"Relatório salvo: {filename}", "success")
+        return filename
+    
+    def save_result(self, category, identifier, data):
+        """Salva resultado em arquivo JSON"""
+        filename = f"{identifier}_{int(time.time())}.json"
+        filepath = os.path.join(RESULTS_DIR, category, filename)
+        
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        self.results[f"{category}:{identifier}"] = data
+    
+    # ==================== MENU INTERATIVO ====================
+    def interactive_menu(self):
+        """Menu interativo principal"""
+        while True:
+            print(f"\n{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            print(f"{Colors.BOLD}SEVEN HUB - MENU PRINCIPAL{Colors.ENDC}")
+            print(f"{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            print(f"{Colors.OKGREEN}1.{Colors.ENDC} DNS/Whois Lookup")
+            print(f"{Colors.OKGREEN}2.{Colors.ENDC} Geolocalização IP")
+            print(f"{Colors.OKGREEN}3.{Colors.ENDC} Análise de Email")
+            print(f"{Colors.OKGREEN}4.{Colors.ENDC} Enumeração Social Media")
+            print(f"{Colors.OKGREEN}5.{Colors.ENDC} Enumeração Subdomínios")
+            print(f"{Colors.OKGREEN}6.{Colors.ENDC} Port Scanner")
+            print(f"{Colors.OKGREEN}7.{Colors.ENDC} Hash Generator")
+            print(f"{Colors.OKGREEN}8.{Colors.ENDC} Phone Intelligence")
+            print(f"{Colors.OKGREEN}9.{Colors.ENDC} URL Analysis")
+            print(f"{Colors.OKGREEN}10.{Colors.ENDC} Gerar Relatório")
+            print(f"{Colors.WARNING}0.{Colors.ENDC} Sair")
+            print(f"{Colors.HEADER}{'='*50}{Colors.ENDC}")
+            
+            choice = input(f"{Colors.BOLD}Selecione opção:{Colors.ENDC} ").strip()
+            
+            if choice == '0':
+                break
+            elif choice == '1':
+                domain = input(f"{Colors.BOLD}Digite o domínio:{Colors.ENDC} ").strip()
+                if domain:
+                    self.whois_lookup(domain)
+            elif choice == '2':
+                ip = input(f"{Colors.BOLD}Digite o IP:{Colors.ENDC} ").strip()
+                if ip:
+                    self.ip_geolocation(ip)
+            elif choice == '3':
+                email = input(f"{Colors.BOLD}Digite o email:{Colors.ENDC} ").strip()
+                if email:
+                    self.email_intelligence(email)
+            elif choice == '4':
+                username = input(f"{Colors.BOLD}Digite o username:{Colors.ENDC} ").strip()
+                if username:
+                    self.social_media_enum(username)
+            elif choice == '5':
+                domain = input(f"{Colors.BOLD}Digite o domínio:{Colors.ENDC} ").strip()
+                if domain:
+                    self.subdomain_enum(domain)
+            elif choice == '6':
+                ip = input(f"{Colors.BOLD}Digite o IP:{Colors.ENDC} ").strip()
+                if ip:
+                    self.port_scan(ip)
+            elif choice == '7':
+                self.hash_tools_menu()
+            elif choice == '8':
+                phone = input(f"{Colors.BOLD}Digite o telefone:{Colors.ENDC} ").strip()
+                if phone:
+                    self.phone_intelligence(phone)
+            elif choice == '9':
+                url = input(f"{Colors.BOLD}Digite a URL:{Colors.ENDC} ").strip()
+                if url:
+                    self.url_analysis(url)
+            elif choice == '10':
+                fmt = input(f"{Colors.BOLD}Formato (json/txt):{Colors.ENDC} ").strip().lower()
+                self.generate_report(fmt or "json")
+            else:
+                self.status("Opção inválida!", "error")
+    
+    def hash_tools_menu(self):
+        """Menu de ferramentas de hash"""
+        print(f"\n{Colors.HEADER}--- FERRAMENTAS DE HASH ---{Colors.ENDC}")
+        print(f"{Colors.OKGREEN}1.{Colors.ENDC} MD5")
+        print(f"{Colors.OKGREEN}2.{Colors.ENDC} SHA1")
+        print(f"{Colors.OKGREEN}3.{Colors.ENDC} SHA256")
+        print(f"{Colors.OKGREEN}4.{Colors.ENDC} SHA512")
+        print(f"{Colors.OKGREEN}5.{Colors.ENDC} Base64 Encode")
+        print(f"{Colors.OKGREEN}6.{Colors.ENDC} Base64 Decode")
+        print(f"{Colors.WARNING}0.{Colors.ENDC} Voltar")
+        
+        choice = input(f"{Colors.BOLD}Escolha:{Colors.ENDC} ").strip()
+        
+        if choice in ['1','2','3','4']:
+            algo_map = {'1':'md5','2':'sha1','3':'sha256','4':'sha512'}
+            text = input(f"{Colors.BOLD}Texto:{Colors.ENDC} ").strip()
+            if text:
+                hashed = self.hash_generator(text, algo_map[choice])
+                print(f"\n{Colors.OKGREEN}Hash ({algo_map[choice].upper()}):{Colors.ENDC} {hashed}")
+        elif choice == '5':
+            text = input(f"{Colors.BOLD}Texto:{Colors.ENDC} ").strip()
+            if text:
+                encoded = self.base64_encode(text)
+                print(f"\n{Colors.OKGREEN}Base64:{Colors.ENDC} {encoded}")
+        elif choice == '6':
+            text = input(f"{Colors.BOLD}Base64:{Colors.ENDC} ").strip()
+            if text:
+                decoded = self.base64_decode(text)
+                print(f"\n{Colors.OKGREEN}Decodificado:{Colors.ENDC} {decoded}")
+    
+    # ==================== MODO BATCH ====================
+    def batch_mode(self, targets_file, module):
+        """Modo batch para processar múltiplos alvos"""
+        try:
+            with open(targets_file, 'r') as f:
+                targets = [line.strip() for line in f if line.strip()]
+            
+            self.status(f"Processando {len(targets)} alvos via {module}...", "info")
+            
+            for i, target in enumerate(targets, 1):
+                print(f"\n[{i}/{len(targets)}] Processando: {target}")
+                if module == "whois":
+                    self.whois_lookup(target)
+                elif module == "ip_geo":
+                    self.ip_geolocation(target)
+                elif module == "email":
+                    self.email_intelligence(target)
+                elif module == "social":
+                    self.social_media_enum(target)
+                elif module == "subdomain":
+                    self.subdomain_enum(target)
+                elif module == "scan":
+                    self.port_scan(target)
+                elif module == "phone":
+                    self.phone_intelligence(target)
+                elif module == "url":
+                    self.url_analysis(target)
+            
+            self.status("Batch processing concluído!", "success")
+            
+        except FileNotFoundError:
+            self.status(f"Arquivo não encontrado: {targets_file}", "error")
+        except Exception as e:
+            self.status(f"Erro no batch: {str(e)}", "error")
+    
+    # ==================== HELPERS GERAIS ====================
+    def clear_screen(self):
+        Colors.clear()
+        self.banner()
+    
+    def show_results(self, title, data):
+        """Exibe resultados formatados"""
+        print(f"\n{Colors.HEADER}--- {title} ---{Colors.ENDC}")
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        print(f"{Colors.HEADER}{'='*50}{Colors.ENDC}")
+
+
+# ============================================================
+# FUNÇÕES AUXILIARES
+# ============================================================
+def check_dependencies():
+    """Verifica dependências necessárias"""
+    deps = {
+        "requests": "pip install requests",
+        "colorama": "pip install colorama"
+    }
+    
+    missing = []
+    for dep, install_cmd in deps.items():
+        try:
+            __import__(dep)
+        except ImportError:
+            missing.append(install_cmd)
+    
+    if missing:
+        print(f"{Fore.RED}Dependências faltando:{Style.RESET_ALL}")
+        for cmd in missing:
+            print(f"  {cmd}")
+        print("\nInstalando...")
+        for cmd in missing:
+            subprocess.run(cmd.split(), check=True)
+        print(f"{Fore.GREEN}✓ Dependências instaladas!{Style.RESET_ALL}")
+
+
+def main():
+    """Função principal"""
+    check_dependencies()
+    
+    hub = SevenHub()
+    hub.banner()
+    
+    # Verifica argumentos de linha de comando
+    parser = argparse.ArgumentParser(description='SevenHub - OSINT Tool')
+    parser.add_argument('--batch', help='Arquivo de alvos para modo batch')
+    parser.add_argument('--module', help='Módulo para modo batch')
+    parser.add_argument('--quick', help='Modo rápido com alvo único')
+    parser.add_argument('--report', action='store_true', help='Gera relatório ao sair')
+    
+    args = parser.parse_args()
+    
+    if args.batch and args.module:
+        hub.batch_mode(args.batch, args.module)
+    elif args.quick:
+        # Modo rápido para um alvo
+        hub.status(f"Modo rápido ativo: {args.quick}", "info")
+        # Aqui você pode adicionar lógica específica
+    else:
+        # Modo interativo
+        try:
+            hub.interactive_menu()
+        except KeyboardInterrupt:
+            print(f"\n{Colors.WARNING}Interrompido pelo usuário.{Colors.ENDC}")
+        finally:
+            if args.report:
+                hub.generate_report()
+    
+    hub.status("SevenHub encerrado.", "info")
+
+
+if __name__ == "__main__":
+    main()
